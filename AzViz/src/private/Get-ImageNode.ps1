@@ -24,7 +24,12 @@ Function Get-ImageNode {
             $flag = $false
         }
         else {
-            $TR += '<TR><TD align="right"><FONT POINT-SIZE="9">Provider:</FONT></TD><TD align="left"><FONT POINT-SIZE="9">{0}</FONT></TD></TR><TR><TD align="right"><FONT POINT-SIZE="9">Type:</FONT></TD><TD align="left"><FONT POINT-SIZE="9">{1}</FONT></TD></TR>' -f $r.Split('/', 2)
+            $parts = $r.Split('/', 2)
+            if ($parts.Count -lt 2) {
+                $parts = @($parts[0], '')
+            }
+
+            $TR += '<TR><TD align="right"><FONT POINT-SIZE="9">Provider:</FONT></TD><TD align="left"><FONT POINT-SIZE="9">{0}</FONT></TD></TR><TR><TD align="right"><FONT POINT-SIZE="9">Type:</FONT></TD><TD align="left"><FONT POINT-SIZE="9">{1}</FONT></TD></TR>' -f $parts[0], $parts[1]
         }
     }
 
