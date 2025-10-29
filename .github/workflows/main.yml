@@ -1,38 +1,102 @@
-# This is a basic workflow to help you get started with Actions
+name: Build and Deploy
 
-name: CI
-
-# Controls when the action will run. 
 on:
   push:
-    branches: [ master ]
-    
-  # Allows you to run this workflow manually from the Actions tab
+    branches:
+      - master
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish module to PowerShell Gallery'
+        required: false
+        default: 'false'
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  test:
+  build:
+    name: Build and Test
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v2
-    - name: perform a pester tests
-      shell: pwsh
-      run: |
-        Invoke-Pester -CI
-  publish:
-    if: contains(github.event.head_commit.message, 'publish to gallery')
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install test dependencies
+        shell: pwsh
+        run: |
+          Install-Module -Name Pester -Scope CurrentUser -Force
+
+      - name: Run Pester tests
+        shell: pwsh
+        run: |
+          Invoke-Pester -CI
+
+      - name: Package AzViz module
+        id: package
+        shell: pwsh
+        run: |
+          $moduleRoot = Join-Path $PWD 'AzViz'
+          if (-not (Test-Path $moduleRoot)) {
+            throw "Module directory not found at $moduleRoot"
+          }
+
+          $artifact = Join-Path $env:RUNNER_TEMP 'AzViz-module.zip'
+          if (Test-Path $artifact) {
+            Remove-Item -Path $artifact -Force
+          }
+
+          Compress-Archive -Path (Join-Path $moduleRoot '*') -DestinationPath $artifact -Force
+          "artifactPath=$artifact" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload module artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: azviz-module
+          path: ${{ steps.package.outputs.artifactPath }}
+
+  deploy:
+    name: Publish Module
+    needs: build
     runs-on: windows-latest
+    if: ${{ secrets.PS_GALLERY_KEY != '' && ((github.event_name == 'push' && contains(github.event.head_commit.message, 'publish to gallery')) || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')) }}
     steps:
-    - uses: actions/checkout@v2
-    - name: publish to powershell gallery
-      shell: pwsh
-      env:
-        NuGetApiKey: ${{ secrets.PS_GALLERY_KEY }}
-      run: |
-        Get-ChildItem -Path env:
-        Install-Module -Name 'PSGraph', 'Az.Accounts', 'Az.Resources' -Scope CurrentUser -Force
-        Write-Host 'Publishing module to PowerShell Gallery'
-        Set-Location .\AzViz\
-        Publish-Module -Path . -NuGetApiKey $env:NuGetApiKey -Verbose
-        Write-Host 'Finished publishing module to PowerShell Gallery'
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download module artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: azviz-module
+          path: module
+
+      - name: Expand module package
+        id: expand
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem module -Filter '*.zip' | Select-Object -First 1
+          if (-not $zip) {
+            throw 'Module package artifact was not found.'
+          }
+
+          $destination = Join-Path $PWD 'module/expanded'
+          if (Test-Path $destination) {
+            Remove-Item -Path $destination -Recurse -Force
+          }
+
+          Expand-Archive -Path $zip.FullName -DestinationPath $destination -Force
+          "modulePath=$destination" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Publish to PowerShell Gallery
+        shell: pwsh
+        env:
+          NUGET_API_KEY: ${{ secrets.PS_GALLERY_KEY }}
+        run: |
+          if (-not $env:NUGET_API_KEY) {
+            throw 'PS_GALLERY_KEY secret is required to publish the module.'
+          }
+
+          Install-Module -Name 'PSGraph', 'Az.Accounts', 'Az.Resources' -Scope CurrentUser -Force
+          $modulePath = '${{ steps.expand.outputs.modulePath }}'
+          if (-not (Test-Path $modulePath)) {
+            throw "Expanded module path '$modulePath' was not found."
+          }
+
+          Publish-Module -Path $modulePath -NuGetApiKey $env:NUGET_API_KEY -Verbose
